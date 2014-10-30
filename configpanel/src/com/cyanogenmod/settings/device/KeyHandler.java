@@ -43,6 +43,8 @@ public class KeyHandler implements DeviceKeyHandler {
     private static final int GESTURE_GTR_SCANCODE = 254;
     private static final int KEY_DOUBLE_TAP = 255;
 
+    private static final int GESTURE_WAKELOCK_DURATION = 3000;
+
     private static final int[] sSupportedGestures = new int[]{
         FLIP_CAMERA_SCANCODE,
         GESTURE_CIRCLE_SCANCODE,
@@ -59,7 +61,9 @@ public class KeyHandler implements DeviceKeyHandler {
     private EventHandler mEventHandler;
     private SensorManager mSensorManager;
     private Sensor mProximitySensor;
+    private SensorEventListener mSensorListener;
     WakeLock mProximityWakeLock;
+    WakeLock mGestureWakeLock;
 
     public KeyHandler(Context context) {
         mContext = context;
@@ -69,6 +73,8 @@ public class KeyHandler implements DeviceKeyHandler {
         mProximitySensor = mSensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
         mProximityWakeLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
                 "ProximityWakeLock");
+        mGestureWakeLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
+                "GestureWakeLock");
     }
 
     private void ensureKeyguardManager() {
@@ -80,6 +86,7 @@ public class KeyHandler implements DeviceKeyHandler {
     private class EventHandler extends Handler {
         @Override
         public void handleMessage(Message msg) {
+            cleanupHold();
             KeyEvent event = (KeyEvent) msg.obj;
             switch(event.getScanCode()) {
             case FLIP_CAMERA_SCANCODE:
@@ -94,6 +101,7 @@ public class KeyHandler implements DeviceKeyHandler {
                 } else {
                     action = MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA;
                 }
+                mGestureWakeLock.acquire(GESTURE_WAKELOCK_DURATION);
                 Intent intent = new Intent(action, null);
                 startActivitySafely(intent);
                 break;
@@ -127,7 +135,7 @@ public class KeyHandler implements DeviceKeyHandler {
             }
             Message msg = getMessageForKeyEvent(event);
             if (mProximitySensor != null) {
-                mEventHandler.sendMessageDelayed(msg, 200);
+                mEventHandler.sendMessageDelayed(msg, 300);
                 processEvent(event);
             } else {
                 mEventHandler.sendMessage(msg);
@@ -142,13 +150,22 @@ public class KeyHandler implements DeviceKeyHandler {
         return msg;
     }
 
+    private void cleanupHold() {
+        if (mProximityWakeLock.isHeld()) {
+            mProximityWakeLock.release();
+        }
+        if (mSensorListener != null) {
+            mSensorManager.unregisterListener(mSensorListener);
+            mSensorListener = null;
+        }
+    }
+
     private void processEvent(final KeyEvent keyEvent) {
         mProximityWakeLock.acquire();
-        mSensorManager.registerListener(new SensorEventListener() {
+        mSensorListener = new SensorEventListener() {
             @Override
             public void onSensorChanged(SensorEvent event) {
-                mProximityWakeLock.release();
-                mSensorManager.unregisterListener(this);
+                cleanupHold();
                 if (!mEventHandler.hasMessages(GESTURE_REQUEST)) {
                     // The sensor took to long, ignoring.
                     return;
@@ -163,7 +180,8 @@ public class KeyHandler implements DeviceKeyHandler {
             @Override
             public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
-        }, mProximitySensor, SensorManager.SENSOR_DELAY_FASTEST);
+        };
+        mSensorManager.registerListener(mSensorListener, mProximitySensor, SensorManager.SENSOR_DELAY_FASTEST);
     }
 
     private IAudioService getAudioService() {
